@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pseudo Code Runner</title>
+  <meta name="description" content="Paste your pseudo code, press Run and see the result. Your code is translated to JavaScript and runs in your browser.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%232563eb'/><path d='M11 9l-6 7 6 7M21 9l6 7-6 7' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">&lt;/&gt;</span>
+      <span class="brand-name">Pseudo Code Runner</span>
+    </div>
+    <div class="toolbar">
+      <label class="select-wrap" title="Load an example program">
+        <span class="sr-only">Examples</span>
+        <select id="exampleSelect">
+          <option value="">Examples…</option>
+        </select>
+      </label>
+      <button id="clearCodeBtn" class="btn ghost" title="Empty the editor">New</button>
+      <button id="glossaryBtn" class="btn ghost" title="Show the list of commands">Glossary</button>
+      <button id="rulesBtn" class="btn ghost icon" title="Writing rules" aria-label="Writing rules">?</button>
+      <button id="runBtn" class="btn primary" title="Run (Ctrl + Enter)">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M7 4.5v15l13-7.5z" fill="currentColor"/></svg>
+        Run
+      </button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="pane editor-pane" aria-label="Code editor">
+      <div class="pane-head">
+        <span class="file-tab">main.pseudo</span>
+        <span class="hint">Ctrl + Enter to run · Tab = 4 spaces</span>
+      </div>
+      <div class="editor" id="editor">
+        <div class="gutter" id="gutter" aria-hidden="true"></div>
+        <div class="code-area">
+          <div class="error-bar" id="errorBar" aria-hidden="true"></div>
+          <pre class="highlight" id="highlight" aria-hidden="true"></pre>
+          <textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off"
+                    wrap="off" aria-label="Pseudo code"></textarea>
+        </div>
+      </div>
+      <div class="statusbar">
+        <span id="cursorPos">Ln 1, Col 1</span>
+        <span id="indentInfo">Spaces: 4</span>
+        <span id="saveInfo">Saved in this browser</span>
+      </div>
+    </section>
+
+    <section class="pane output-pane" aria-label="Result">
+      <div class="pane-head tabs" role="tablist">
+        <button class="tab active" role="tab" data-tab="output" aria-selected="true">Output</button>
+        <button class="tab" role="tab" data-tab="js" aria-selected="false">JavaScript</button>
+        <span class="spacer"></span>
+        <span id="runInfo" class="run-info"></span>
+        <button id="copyOutputBtn" class="btn tiny ghost" title="Copy output">Copy</button>
+        <button id="clearOutputBtn" class="btn tiny ghost" title="Clear output">Clear</button>
+      </div>
+      <div class="tab-body" id="tab-output">
+        <div id="output" class="console" aria-live="polite">
+          <div class="placeholder">Press <b>Run</b> to see the result of your pseudo code here.</div>
+        </div>
+      </div>
+      <div class="tab-body hidden" id="tab-js">
+        <pre id="jsOutput" class="console js-view">Run your code to see the JavaScript it was translated into.</pre>
+      </div>
+    </section>
+  </main>
+
+  <!-- Glossary drawer -->
+  <aside class="drawer" id="glossary" aria-label="Glossary" aria-hidden="true">
+    <div class="drawer-head">
+      <h2>Glossary</h2>
+      <button class="btn ghost icon" id="closeGlossaryBtn" aria-label="Close glossary">✕</button>
+    </div>
+    <input type="search" id="glossarySearch" placeholder="Search a command, e.g. FOR, SORT, LENGTH" aria-label="Search glossary">
+    <p class="drawer-note">Commands are <b>UPPERCASE</b>. Blocks are indented by <b>4 spaces</b> and closed with <b>END …</b>.</p>
+    <div id="glossaryList" class="glossary-list"></div>
+  </aside>
+  <div class="scrim" id="scrim"></div>
+
+  <!-- First visit / rules popup -->
+  <div class="modal-backdrop" id="rulesModal" role="dialog" aria-modal="true" aria-labelledby="rulesTitle" hidden>
+    <div class="modal">
+      <h2 id="rulesTitle">Before you start: 5 rules</h2>
+      <p class="modal-lead">The computer is strict. Your pseudo code only runs if it follows these rules.</p>
+      <ol class="rules">
+        <li>
+          <b>Commands in UPPERCASE.</b>
+          <code>SET</code>, <code>PRINT</code>, <code>IF</code>, <code>THEN</code>, <code>FOR EACH</code>, <code>END IF</code>…
+          <span class="bad">print "hi"</span> <span class="good">PRINT "hi"</span>
+        </li>
+        <li>
+          <b>Indent with exactly 4 spaces</b> inside every block (the Tab key adds 4 spaces). Each level inside adds 4 more.
+<pre>IF score &gt; 50 THEN
+<span class="sp">····</span>PRINT "Pass"
+END IF</pre>
+        </li>
+        <li>
+          <b>Close every block</b> with its END: <code>END IF</code>, <code>END FOR</code>, <code>END WHILE</code>, <code>END FUNCTION</code>.
+        </li>
+        <li>
+          <b>Use SET to give a value</b> and put spaces between words:
+          <span class="bad">x=5</span> <span class="good">SET x = 5</span>
+        </li>
+        <li>
+          <b>Text goes inside quotes</b> and is joined with <code>+</code>:
+          <span class="good">PRINT "Total: " + total</span>
+        </li>
+      </ol>
+      <p class="modal-foot">Not sure how to write something? Open the <b>Glossary</b>. Error messages tell you the line number to fix.</p>
+      <div class="modal-actions">
+        <button class="btn ghost" id="openGlossaryFromModal">Open Glossary</button>
+        <button class="btn primary" id="closeRulesBtn">I understand</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status"></div>
+
+  <script src="js/transpiler.js"></script>
+  <script src="js/examples.js"></script>
+  <script src="js/glossary.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
