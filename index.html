@@ -79,9 +79,28 @@
       <h2>Glossary</h2>
       <button class="btn ghost icon" id="closeGlossaryBtn" aria-label="Close glossary">✕</button>
     </div>
+    <div class="drawer-tabs" role="tablist">
+      <button class="dtab active" data-gtab="builtin" role="tab">Built-in</button>
+      <button class="dtab" data-gtab="mine" role="tab">My commands <span class="count" id="myCount">0</span></button>
+    </div>
     <input type="search" id="glossarySearch" placeholder="Search a command, e.g. FOR, SORT, LENGTH" aria-label="Search glossary">
-    <p class="drawer-note">Commands are <b>UPPERCASE</b>. Blocks are indented by <b>4 spaces</b> and closed with <b>END …</b>.</p>
-    <div id="glossaryList" class="glossary-list"></div>
+    <div id="builtinPanel" class="gpanel">
+      <p class="drawer-note">Commands are <b>UPPERCASE</b>. Blocks are indented by <b>4 spaces</b> and closed with <b>END …</b>.
+        Missing a command you use? Add it in <a href="#" id="toMineLink">My commands</a>.</p>
+      <div id="glossaryList" class="glossary-list"></div>
+    </div>
+    <div id="minePanel" class="gpanel hidden">
+      <p class="drawer-note">Teach the runner your own commands. They are saved <b>only in this browser</b>.</p>
+      <div class="mine-actions">
+        <button class="btn tiny primary" id="addCommandBtn">+ New command</button>
+        <button class="btn tiny" id="addFunctionBtn">+ New function</button>
+        <span class="spacer"></span>
+        <button class="btn tiny ghost" id="exportBtn" title="Download your commands as a file to share">Export</button>
+        <button class="btn tiny ghost" id="importBtn" title="Load commands from a file">Import</button>
+        <input type="file" id="importFile" accept=".json,application/json" hidden>
+      </div>
+      <div id="myList" class="glossary-list"></div>
+    </div>
   </aside>
   <div class="scrim" id="scrim"></div>
 
@@ -114,10 +133,92 @@ END IF</pre>
           <span class="good">PRINT "Total: " + total</span>
         </li>
       </ol>
-      <p class="modal-foot">Not sure how to write something? Open the <b>Glossary</b>. Error messages tell you the line number to fix.</p>
+      <p class="modal-foot">Not sure how to write something? Open the <b>Glossary</b>. Error messages tell you the line number to fix.
+        Your class uses a command the runner doesn't know? Teach it in <b>Glossary → My commands</b>.</p>
       <div class="modal-actions">
         <button class="btn ghost" id="openGlossaryFromModal">Open Glossary</button>
         <button class="btn primary" id="closeRulesBtn">I understand</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Custom command / function editor -->
+  <div class="modal-backdrop" id="customModal" role="dialog" aria-modal="true" aria-labelledby="customTitle" hidden>
+    <div class="modal wide">
+      <div class="modal-top">
+        <h2 id="customTitle">Teach a new command</h2>
+        <div class="seg" role="tablist">
+          <button class="seg-btn active" data-kind="command" role="tab">Command</button>
+          <button class="seg-btn" data-kind="function" role="tab">Function</button>
+        </div>
+      </div>
+
+      <form id="commandForm" class="cform" autocomplete="off">
+        <label class="field">
+          <span class="label">When I write…</span>
+          <input id="cmdPattern" class="mono" placeholder="INCREASE {x} BY {n}" required>
+          <span class="help">Write the command once and put <code>{name}</code> where things change. Example: <code>INCREASE {x} BY {n}</code></span>
+        </label>
+        <label class="check">
+          <input type="checkbox" id="cmdAnywhere">
+          <span>It is a phrase that can appear <b>inside</b> other lines (e.g. <code>{a} IS GREATER THAN {b}</code> inside an IF)</span>
+        </label>
+        <label class="field">
+          <span class="label">…it means</span>
+          <textarea id="cmdMeaning" class="mono" rows="4" placeholder="SET {x} = {x} + ({n})" required></textarea>
+          <span class="help">Use commands the runner already knows. It can be several lines. Put <code>( )</code> around a value used in maths.
+            <code>{#}</code> becomes a unique number (for loop variables).
+            Block example: <code>LOOP {n} TIMES:</code> → <code>FOR i{#} FROM 1 TO {n}:</code> plus a second command <code>END LOOP</code> → <code>END FOR</code>.</span>
+        </label>
+        <label class="field">
+          <span class="label">Description <em>(optional)</em></span>
+          <input id="cmdDesc" placeholder="Adds a number to a variable">
+        </label>
+        <div class="tryit">
+          <label class="field">
+            <span class="label">Try it: type a line that uses your command</span>
+            <input id="cmdTry" class="mono" placeholder="INCREASE score BY 5">
+          </label>
+          <pre id="cmdPreview" class="preview"></pre>
+        </div>
+      </form>
+
+      <form id="functionForm" class="cform hidden" autocomplete="off">
+        <div class="row">
+          <label class="field">
+            <span class="label">Function name</span>
+            <input id="fnName" class="mono" placeholder="REVERSE" required>
+          </label>
+          <label class="field">
+            <span class="label">Parameters</span>
+            <input id="fnParams" class="mono" placeholder="text">
+          </label>
+        </div>
+        <div class="field">
+          <span class="label">Written in</span>
+          <div class="radios">
+            <label><input type="radio" name="fnLang" value="pseudo" checked> Pseudo code</label>
+            <label><input type="radio" name="fnLang" value="js"> JavaScript</label>
+          </div>
+        </div>
+        <label class="field">
+          <span class="label">Body</span>
+          <textarea id="fnBody" class="mono" rows="6" required></textarea>
+          <span class="help" id="fnHelp"></span>
+        </label>
+        <label class="field">
+          <span class="label">Description <em>(optional)</em></span>
+          <input id="fnDesc" placeholder="Reverses a text">
+        </label>
+        <pre id="fnPreview" class="preview"></pre>
+      </form>
+
+      <div class="form-error" id="customError" role="alert"></div>
+      <div class="modal-actions">
+        <button class="btn ghost danger" id="deleteCustomBtn" hidden>Delete</button>
+        <span class="spacer"></span>
+        <button class="btn ghost" id="cancelCustomBtn">Cancel</button>
+        <button class="btn primary" id="saveCustomBtn">Save</button>
       </div>
     </div>
   </div>

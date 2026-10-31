@@ -37,5 +37,34 @@ check("missing END", 'IF TRUE THEN\n    PRINT 1', undefined, /never closed/);
 check("wrong END", 'IF TRUE THEN\n    PRINT 1\nEND FOR', undefined, /Expected END IF/);
 check("infinite loop", 'SET x = 0\nWHILE x < 1 DO\n    SET y = 1\nEND WHILE', undefined, /infinite loop/);
 check("undefined var", 'PRINT total', undefined, /does not exist/);
+// custom commands & functions
+function checkC(name, src, custom, expectOut, expectErr) {
+  const out = [];
+  const r = P.run(src, { print: (l) => out.push(l), custom });
+  const ok = expectErr ? !r.ok && expectErr.test(r.error.message) : r.ok && out.join("\n") === expectOut;
+  if (!ok) { failed++; console.log("FAIL", name, r.error, out.join("\n")); } else console.log("ok  ", name);
+}
+const custom = {
+  commands: [
+    { pattern: "INCREASE {x} BY {n}", replacement: "SET {x} = {x} + ({n})" },
+    { pattern: "{a} IS GREATER THAN {b}", replacement: "{a} > {b}", anywhere: true },
+    { pattern: "LOOP {n} TIMES:", replacement: "FOR i{#} FROM 1 TO {n}:" },
+    { pattern: "END LOOP", replacement: "END FOR" },
+    { pattern: "SWAP {a} AND {b}", replacement: "SET t{#} = {a}\nSET {a} = {b}\nSET {b} = t{#}" },
+  ],
+  functions: [
+    { name: "SHOUT", params: "t", language: "js", body: "return String(t).toUpperCase();" },
+    { name: "DOUBLE", params: "n", language: "pseudo", body: "RETURN n * 2" },
+  ],
+};
+checkC("custom line command", "SET a = 1\nINCREASE a BY 2 + 3\nPRINT a", custom, "6");
+checkC("custom phrase", 'IF 5 IS GREATER THAN 2 THEN\n    PRINT "IS GREATER THAN"\nEND IF', custom, "IS GREATER THAN");
+checkC("custom block (nested)", "LOOP 2 TIMES:\n    LOOP 2 TIMES\n        PRINT 1\n    END LOOP\nEND LOOP", custom, "1\n1\n1\n1");
+checkC("custom multi-line", "SET a = 1\nSET b = 2\nSWAP a AND b\nPRINT a, b", custom, "2 1");
+checkC("custom functions", 'PRINT SHOUT("hi"), DOUBLE(4)', custom, "HI 8");
+checkC("without custom", "INCREASE a BY 1", {}, undefined, /don't understand/);
+checkC("bad custom fn", "PRINT BROKEN(1)", { functions: [{ name: "BROKEN", params: "n", body: "RETURN nope" }] }, undefined, /custom function BROKEN/);
+if (P.checkFunction({ name: "LENGTH", params: "", body: "RETURN 1" }) === null) { failed++; console.log("FAIL built-in name clash"); }
+
 console.log(failed ? `\n${failed} test(s) FAILED` : "\nAll tests passed");
 process.exit(failed ? 1 : 0);

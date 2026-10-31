@@ -38,14 +38,19 @@
    "protected public await arguments eval undefined NaN Infinity of")
     .split(" ").forEach(function (w) { JS_RESERVED[w] = true; });
 
-  function PseudoError(message, line) {
+  function PseudoError(message, line, code, data) {
     this.name = "PseudoError";
     this.message = message;
     this.line = line || null;
+    this.code = code || null;   // e.g. "unknown-line" so the page can offer "Teach this command"
+    this.data = data || null;
   }
   PseudoError.prototype = Object.create(Error.prototype);
 
-  function fail(line, message) { throw new PseudoError(message, line); }
+  function fail(line, message, code, data) { throw new PseudoError(message, line, code, data); }
+
+  // Names of the user's custom JavaScript functions (set at the start of each transpile)
+  var CUSTOM_JS = {};
 
   // ---------------------------------------------------------------------------
   // Tokenizer (used for expressions)
@@ -180,6 +185,7 @@
         else if (v === "NULL" || v === "NONE" || v === "null") v = "null";
         else if (v === "true" || v === "false") { /* keep */ }
         else if (BUILTIN_SET[v] && next && next.v === "(") v = "__rt." + v;
+        else if (CUSTOM_JS[v] && next && next.v === "(") v = "__rt.custom." + v;
         else v = renameIdent(v);
         out.push(v);
       } else if (tok.t === "op") {
@@ -288,7 +294,8 @@
     return depth;
   }
 
-  function logicalLines(source) {
+  function logicalLines(source, lineBase) {
+    lineBase = lineBase || 0;
     var raw = source
       .replace(/\r\n?/g, "\n")
       .replace(/[\u201c\u201d\u201e\u2033]/g, '"')   // curly quotes pasted from Word / Google Docs
@@ -296,7 +303,7 @@
       .split("\n");
     var result = [], pending = null;
     for (var i = 0; i < raw.length; i++) {
-      var lineNo = i + 1;
+      var lineNo = lineBase + i + 1;
       var text = raw[i].replace(/\t/g, "    ").replace(/ /g, " ");
       text = stripComment(text, lineNo).replace(/\s+$/, "");
       if (pending) {
@@ -318,13 +325,256 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Custom commands (taught by the user, stored in their browser)
+  //
+  //   { pattern: "INCREASE {x} BY {n}", replacement: "SET {x} = {x} + {n}", anywhere: false }
+  //
+  // A "whole line" command replaces a full line with one or more lines of pseudo code.
+  // An "anywhere" command replaces a phrase inside any line, e.g. "{a} IS GREATER THAN {b}" -> "{a} > {b}".
+  // {#} in the replacement becomes a unique number (useful for loop variables).
+  // ---------------------------------------------------------------------------
+  var MASK_RE = /\u0001(\d+)\u0001/g;
+  var OPERAND = "(?:\u0001\\d+\u0001|-?\\d+(?:\\.\\d+)?|[A-Za-z_][A-Za-z0-9_]*" +
+    "(?:\\.[A-Za-z_][A-Za-z0-9_]*|\\[[^\\[\\]]*\\]|\\([^()]*\\))*|\\([^()]*\\)|\\[[^\\[\\]]*\\])";
+
+  function maskStrings(text) {
+    var strings = [];
+    var masked = text.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, function (str) {
+      strings.push(str);
+      return "\u0001" + (strings.length - 1) + "\u0001";
+    });
+    return { text: masked, strings: strings };
+  }
+  function unmask(text, strings) {
+    return text.replace(MASK_RE, function (all, i) { return strings[+i] !== undefined ? strings[+i] : all; });
+  }
+  function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+  function literalToRe(text) {
+    return text.split(/(\s+)/).map(function (chunk) {
+      if (!chunk) return "";
+      if (/^\s+$/.test(chunk)) return "\\s*";
+      return (/^\w/.test(chunk) ? "\\b" : "") + escapeRe(chunk) + (/\w$/.test(chunk) ? "\\b" : "");
+    }).join("");
+  }
+
+  /** Check a custom command and turn it into a matcher. Throws Error with a friendly message. */
+  function compileCommand(cmd) {
+    var pattern = String(cmd.pattern || "").trim();
+    var optionalColon = !cmd.anywhere && /:$/.test(pattern);
+    if (optionalColon) pattern = pattern.replace(/\s*:$/, "");
+    var replacement = String(cmd.replacement || "").replace(/\r\n?/g, "\n").replace(/\t/g, "    ").replace(/\s+$/, "");
+    if (!pattern) throw new Error("Write the pattern: how the command looks, e.g. INCREASE {x} BY {n}");
+    if (pattern.indexOf("\n") >= 0) throw new Error("The pattern must be a single line.");
+    if (!replacement.trim()) throw new Error("Write what the command means, using commands the runner already knows.");
+    var parts = pattern.split(/(\{[A-Za-z_][A-Za-z0-9_]*\})/);
+    var names = [], src = "", hasWord = false, lastWasHole = false;
+    parts.forEach(function (part) {
+      var hole = part.match(/^\{([A-Za-z_][A-Za-z0-9_]*)\}$/);
+      if (hole) {
+        if (names.indexOf(hole[1]) >= 0) throw new Error("The placeholder {" + hole[1] + "} appears twice in the pattern. Give each one a different name.");
+        if (lastWasHole) throw new Error("Two placeholders need a word between them, e.g. {a} AND {b}.");
+        names.push(hole[1]);
+        src += "(" + (cmd.anywhere ? OPERAND : ".+?") + ")";
+        lastWasHole = true;
+      } else {
+        if (/[{}]/.test(part)) throw new Error("Placeholders are written like {name} (letters, numbers and _ only).");
+        if (/[A-Za-z0-9]/.test(part)) hasWord = true;
+        if (part.trim()) lastWasHole = false;
+        src += literalToRe(part);
+      }
+    });
+    if (!hasWord) throw new Error("The pattern needs at least one fixed word, e.g. INCREASE {x} BY {n}.");
+    var used = replacement.match(/\{([A-Za-z_][A-Za-z0-9_]*|#)\}/g) || [];
+    used.forEach(function (u) {
+      var nm = u.slice(1, -1);
+      if (nm !== "#" && names.indexOf(nm) < 0) throw new Error("The meaning uses " + u + " but the pattern has no " + u + ".");
+    });
+    if (cmd.anywhere && replacement.indexOf("\n") >= 0) {
+      throw new Error("A command that can appear inside a line must mean a single line (a value or condition).");
+    }
+    var re = cmd.anywhere ? new RegExp(src, "g") : new RegExp("^\\s*" + src + "\\s*:?\\s*$");
+    if (optionalColon) pattern += ":";
+    return { pattern: pattern, replacement: replacement, anywhere: !!cmd.anywhere, names: names, re: re };
+  }
+
+  function makeExpander(commands) {
+    var compiled = [];
+    (commands || []).forEach(function (c) {
+      try { compiled.push(compileCommand(c)); } catch (e) { /* invalid commands are ignored */ }
+    });
+    var lineRules = compiled.filter(function (r) { return !r.anywhere; });
+    var phraseRules = compiled.filter(function (r) { return r.anywhere; });
+    var counter = 0;
+
+    function fill(rule, groups, strings, keepMasked) {
+      var vals = {};
+      rule.names.forEach(function (nm, i) {
+        var v = (groups[i] || "").trim();
+        vals[nm] = keepMasked ? v : unmask(v, strings);
+      });
+      var id = ++counter;
+      return rule.replacement.replace(/\{([A-Za-z_][A-Za-z0-9_]*|#)\}/g, function (all, nm) {
+        if (nm === "#") return String(id);
+        return Object.prototype.hasOwnProperty.call(vals, nm) ? vals[nm] : all;
+      });
+    }
+
+    function applyPhrases(text) {
+      for (var round = 0; round < 10; round++) {
+        var mk = maskStrings(text), t = mk.text, changed = false;
+        phraseRules.forEach(function (r) {
+          r.re.lastIndex = 0;
+          t = t.replace(r.re, function () {
+            changed = true;
+            return fill(r, Array.prototype.slice.call(arguments, 1, 1 + r.names.length), mk.strings, true);
+          });
+        });
+        text = unmask(t, mk.strings);
+        if (!changed) break;
+      }
+      return text;
+    }
+
+    // Returns the list of lines an input line turns into.
+    function expand(item, depth, out) {
+      if (depth > 12) {
+        fail(item.line, "Your custom command \"" + item.rule + "\" keeps turning into itself forever. " +
+          "Change its meaning so it uses commands the runner already knows.");
+      }
+      var mk = maskStrings(item.text);
+      for (var i = 0; i < lineRules.length; i++) {
+        var r = lineRules[i], m = mk.text.match(r.re);
+        if (!m) continue;
+        var lines = fill(r, m.slice(1), mk.strings, false).split("\n");
+        var base = null;
+        lines.forEach(function (l) {
+          if (!l.trim()) return;
+          var ind = l.match(/^ */)[0].length;
+          if (base === null || ind < base) base = ind;
+        });
+        lines.forEach(function (l) {
+          var c = stripComment(l, item.line).replace(/\s+$/, "");
+          if (!c.trim()) return;
+          var ind = c.match(/^ */)[0].length;
+          expand({
+            line: item.line,
+            indent: item.indent + Math.max(0, ind - base),
+            text: c.trim(),
+            rule: item.rule || r.pattern,
+            original: item.original || item.text
+          }, depth + 1, out);
+        });
+        return out;
+      }
+      if (phraseRules.length) {
+        var nt = applyPhrases(item.text);
+        if (nt !== item.text) {
+          return expand({ line: item.line, indent: item.indent, text: nt,
+            rule: item.rule || "phrase", original: item.original || item.text }, depth + 1, out);
+        }
+      }
+      out.push(item);
+      return out;
+    }
+
+    return {
+      active: compiled.length > 0,
+      lines: function (items) {
+        if (!compiled.length) return items;
+        var out = [];
+        items.forEach(function (it) { expand(it, 0, out); });
+        return out;
+      }
+    };
+  }
+
+  /** For the "Try it" box: what does `sampleLine` become with this one command? */
+  function previewCommand(cmd, sampleLine) {
+    var rule = compileCommand(cmd);
+    var exp = makeExpander([cmd]);
+    var indent = (sampleLine.match(/^ */) || [""])[0].length;
+    var items = exp.lines([{ line: 1, indent: indent, text: sampleLine.trim() }]);
+    var changed = !(items.length === 1 && items[0].text === sampleLine.trim() && !items[0].rule);
+    return {
+      matched: changed,
+      rule: rule,
+      text: items.map(function (it) { return new Array(it.indent + 1).join(" ") + it.text; }).join("\n")
+    };
+  }
+
+  var FN_LINE_BASE = 100000; // line numbers of custom pseudo functions start here (one block per function)
+
+  function customFunctionSource(fn) {
+    var params = String(fn.params || "").trim();
+    var body = String(fn.body || "").replace(/\r\n?/g, "\n").replace(/\t/g, "    ").split("\n");
+    return "FUNCTION " + fn.name + "(" + params + ")\n" +
+      body.map(function (l) { return l.trim() ? "    " + l : ""; }).join("\n") + "\nEND FUNCTION";
+  }
+
+  function checkFunctionHeader(fn) {
+    var name = String(fn.name || "").trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error("The function name can only use letters, numbers and _ (no spaces).");
+    if (BUILTIN_SET[name]) throw new Error(name + " is already a built-in function. Choose another name.");
+    if (JS_RESERVED[name] || COMMANDS.indexOf(name.toUpperCase()) >= 0) throw new Error("\"" + name + "\" cannot be used as a function name. Choose another name.");
+    var params = String(fn.params || "").trim();
+    if (params && !/^[A-Za-z_][A-Za-z0-9_]*(\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*$/.test(params)) {
+      throw new Error("Parameters are names separated by commas, e.g.  text, times");
+    }
+    if (!String(fn.body || "").trim()) throw new Error("The function body is empty.");
+    return name;
+  }
+
+  // Custom functions that will be included for this program
+  function libraryFor(source, custom) {
+    return ((custom && custom.functions) || []).filter(function (fn) {
+      try { checkFunctionHeader(fn); } catch (e) { return false; }
+      // a FUNCTION with the same name written in the program itself wins
+      return !new RegExp("^\\s*FUNCTION\\s+" + fn.name + "\\s*\\(", "m").test(source);
+    });
+  }
+
+  /** Validate a custom function. Returns null when fine or a friendly error message. */
+  function checkFunction(fn) {
+    try {
+      checkFunctionHeader(fn);
+      if (fn.language === "js") {
+        new Function("PRINT", "return function (" + (fn.params || "") + ") {\n" + fn.body + "\n};");
+      } else {
+        transpile("", { functions: [fn] });
+      }
+      return null;
+    } catch (e) {
+      var msg = e.message || String(e);
+      if (e.line && e.line > FN_LINE_BASE) {
+        var bodyLine = (e.line % FN_LINE_BASE) - 1;
+        if (bodyLine >= 1) msg = "Body line " + bodyLine + ": " + msg;
+      }
+      return msg;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Step 2: parse statements and generate JavaScript
   // ---------------------------------------------------------------------------
   var BLOCK_NAMES = { IF: "IF", FOR: "FOR", WHILE: "WHILE", FUNCTION: "FUNCTION", REPEAT: "REPEAT" };
   var LOOP_GUARD = "if (++__rt.steps > __rt.MAX_STEPS) __rt.tooManySteps();";
 
-  function transpile(source) {
-    var lines = logicalLines(source);
+  function transpile(source, custom) {
+    custom = custom || {};
+    var expander = makeExpander(custom.commands);
+    var lines = expander.lines(logicalLines(source));
+
+    // the user's custom functions
+    CUSTOM_JS = {};
+    var libFunctions = libraryFor(source, custom);
+    var pseudoIndex = 0;
+    libFunctions.forEach(function (fn) {
+      if (fn.language === "js") { CUSTOM_JS[fn.name] = true; return; }
+      var base = FN_LINE_BASE * (++pseudoIndex);
+      lines = lines.concat(expander.lines(logicalLines(customFunctionSource(fn), base)));
+    });
+
     var stack = [];           // open blocks
     var globalScope = { vars: {}, localOnly: {}, params: {}, out: [] };
     var functions = [];       // finished function scopes
@@ -355,6 +605,18 @@
     }
 
     lines.forEach(function (L) {
+      try {
+        processLine(L);
+      } catch (e) {
+        if (e instanceof PseudoError && L.rule && !e.annotated) {
+          e.annotated = true;
+          e.message += " (This line uses your custom command \"" + L.rule + "\". It was turned into: " + L.text + ")";
+        }
+        throw e;
+      }
+    });
+
+    function processLine(L) {
       var text = L.text, n = L.line;
       var firstWord = (text.match(/^[A-Za-z_][A-Za-z0-9_]*/) || [""])[0];
       var upper = firstWord.toUpperCase();
@@ -408,7 +670,8 @@
         return;
       }
       if (/^END/.test(text) && /^END[A-Z]*$/.test(text.replace(/\s+/g, "")) ) {
-        fail(n, "Unknown END. Use END IF, END FOR, END WHILE or END FUNCTION (with a space).");
+        fail(n, "Unknown END. Use END IF, END FOR, END WHILE or END FUNCTION (with a space). " +
+          "If \"" + text + "\" is a command you use, you can teach it to the runner.", "unknown-line", { text: L.original || text });
       }
 
       // ---- ELSE / ELSE IF --------------------------------------------------
@@ -611,8 +874,9 @@
         fail(n, "Use SET to change a value, e.g. SET " + firstWord + " = " + firstWord + " + 1");
       }
       fail(n, "I don't understand this line: \"" + text + "\". Each line must start with a command such as " +
-        "SET, PRINT, IF, FOR, WHILE, ADD... (see the Glossary).");
-    });
+        "SET, PRINT, IF, FOR, WHILE, ADD... (see the Glossary). If this is a command you use, you can teach it to the runner.",
+        "unknown-line", { text: L.original || text });
+    }
 
     if (scope !== globalScope || stack.length) {
       var open = stack[stack.length - 1];
@@ -692,6 +956,7 @@
     }
 
     var rt = {
+      custom: {},
       line: 0,
       steps: 0,
       MAX_STEPS: options.maxSteps || MAX_STEPS,
@@ -825,6 +1090,23 @@
         return v;
       }
     };
+    ((options.custom && options.custom.functions) || []).forEach(function (fn) {
+      if (fn.language !== "js") return;
+      try { checkFunctionHeader(fn); } catch (e) { return; }
+      var impl;
+      try {
+        impl = new Function("PRINT", "return function (" + (fn.params || "") + ") {\n" + fn.body + "\n};")(rt.PRINT);
+      } catch (e) {
+        impl = function () { err("Your custom JavaScript function " + fn.name + " has a mistake: " + e.message); };
+      }
+      rt.custom[fn.name] = function () {
+        try { return impl.apply(null, arguments); }
+        catch (e) {
+          if (e instanceof RuntimeError) throw e;
+          err("Error inside your custom function " + fn.name + ": " + (e && e.message ? e.message : e));
+        }
+      };
+    });
     return rt;
   }
 
@@ -839,7 +1121,7 @@
       var extra = BUILTIN_SET[name.toUpperCase()] && name !== name.toUpperCase()
         ? " Built-in functions are UPPERCASE: write " + name.toUpperCase() + "(...)."
         : " Did you forget to SET it first, or is the spelling/capitalisation different?";
-      return { line: line, message: "'" + name + "' does not exist." + extra };
+      return { line: line, message: "'" + name + "' does not exist." + extra, code: "unknown-name", data: { name: name } };
     }
     if ((m = msg.match(/Cannot read propert(?:y|ies) of (undefined|null)(?: \(reading '(.*)'\))?/))) {
       return { line: line, message: "You tried to look inside something that is " + m[1] +
@@ -864,11 +1146,29 @@
    */
   function run(source, options) {
     options = options || {};
+    var custom = options.custom || {};
+    var library = libraryFor(source, custom).filter(function (fn) { return fn.language !== "js"; });
+
+    // Errors on lines that belong to a custom pseudo function: explain where they are
+    function place(err) {
+      if (err.line && err.line > FN_LINE_BASE) {
+        var fn = library[Math.floor(err.line / FN_LINE_BASE) - 1];
+        var bodyLine = (err.line % FN_LINE_BASE) - 1;
+        err.message = "In your custom function " + (fn ? fn.name : "?") +
+          (bodyLine >= 1 ? " (body line " + bodyLine + ")" : "") + ": " + err.message;
+        err.line = null;
+        err.customFunction = fn ? fn.name : null;
+      }
+      return err;
+    }
+
     var js;
     try {
-      js = transpile(source);
+      js = transpile(source, custom);
     } catch (e) {
-      if (e instanceof PseudoError) return { ok: false, js: null, error: { line: e.line, message: e.message, phase: "syntax" } };
+      if (e instanceof PseudoError) {
+        return { ok: false, js: null, error: place({ line: e.line, message: e.message, phase: "syntax", code: e.code, data: e.data }) };
+      }
       return { ok: false, js: null, error: { line: null, message: "Translator problem: " + e.message, phase: "syntax" } };
     }
     var rt = createRuntime(options);
@@ -877,7 +1177,7 @@
     } catch (e) {
       var fe = friendlyError(e, rt);
       fe.phase = "runtime";
-      return { ok: false, js: js, error: fe };
+      return { ok: false, js: js, error: place(fe) };
     }
     return { ok: true, js: js, error: null };
   }
@@ -885,6 +1185,9 @@
   var api = {
     transpile: transpile,
     run: run,
+    compileCommand: compileCommand,
+    previewCommand: previewCommand,
+    checkFunction: checkFunction,
     format: format,
     PseudoError: PseudoError,
     COMMANDS: COMMANDS,

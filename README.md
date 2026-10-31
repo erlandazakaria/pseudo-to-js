@@ -11,6 +11,24 @@ The pseudo code is translated into JavaScript and runs in the browser. There is 
 - **First-visit popup** with the 5 writing rules (UPPERCASE commands, 4-space indentation, END for every block, SET, quotes). It can be reopened with the **?** button.
 - **JavaScript** tab showing the code the pseudo code was translated into
 - Infinite-loop protection
+- **My commands**: students (or teachers) can teach the runner their own commands, saved in the browser's localStorage (see below)
+
+## My commands (custom commands)
+Pseudo code differs from person to person, so students can add commands the runner does not know yet.
+Open **Glossary → My commands**, or click **+ Teach this command** on the error message for an unknown line.
+
+| Kind | Example "When I write…" | "…it means" |
+|---|---|---|
+| Command (whole line) | `INCREASE {x} BY {n}` | `SET {x} = {x} + ({n})` |
+| Block command | `LOOP {n} TIMES:` and `END LOOP` | `FOR i{#} FROM 1 TO {n}:` and `END FOR` |
+| Several lines | `SWAP {a} AND {b}` | `SET t{#} = {a}` / `SET {a} = {b}` / `SET {b} = t{#}` |
+| Phrase (inside any line) | `{a} IS GREATER THAN {b}` | `{a} > {b}` |
+| Function (pseudo code or JavaScript) | `SHOUT(text)` | `return String(text).toUpperCase() + "!";` |
+
+- `{name}` marks a part that changes; `{#}` becomes a unique number (so nested loops don't clash).
+- The meaning is written with commands the runner already knows, so a new command is just a shortcut and needs no JavaScript.
+- Everything is stored only in that browser (`localStorage`). Use **Export** to download a `.json` file and **Import** to load it,
+  so a teacher can prepare a set of commands and share the file with the class.
 
 ## Publish on GitHub Pages
 1. Merge this branch into `main`.
@@ -23,8 +41,8 @@ The pseudo code is translated into JavaScript and runs in the browser. There is 
 |---|---|
 | `index.html` | The page |
 | `css/style.css` | Styles |
-| `js/transpiler.js` | Pseudo code → JavaScript translator and runtime (built-in functions) |
-| `js/app.js` | Editor, Run button, glossary, popup |
+| `js/transpiler.js` | Pseudo code → JavaScript translator, custom-command engine, and runtime (built-in functions) |
+| `js/app.js` | Editor, Run button, glossary, popup, My commands |
 | `js/glossary.js` | Glossary entries (**edit this to document new commands**) |
 | `js/examples.js` | Example programs in the *Examples* menu (**add new examples here**) |
 | `tests/run-tests.js` | Checks that every example and glossary snippet runs: `node tests/run-tests.js` |
